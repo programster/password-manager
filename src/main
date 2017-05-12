@@ -1,0 +1,561 @@
+#!/usr/bin/php
+
+<?php
+
+
+require_once(__DIR__ . '/PasswordAccount.php');
+require_once(__DIR__ . '/HelperLib.php');
+
+define('CIPHER', 'aes-256-cbc');
+
+class Main
+{
+    private $m_key;
+    
+    
+    /**
+     * Handle the user specifying that they want to remove a password from the options menu.
+     * Asks the user for the index of the password they wish to delete, before deleting it and saving.
+     * @param void
+     * @return void
+     */
+    private function removePassword()
+    {
+        $accounts = $this->loadAccounts();
+        $this->println("Remove which password (specify index number):");
+        $index = readline();
+        unset($accounts[$index]);
+        $this->saveAccounts($accounts);
+    }
+    
+    
+    /**
+     * Handle the user specifying that they want to edit a password from the options menu.
+     * Steps the user through changing the deetails before saving the passwords to the file.
+     * @param void
+     * @return void
+     */
+    private function editPassword()
+    {
+        $accounts =$this->loadAccounts();
+        $this->println("Edit which password (index): ");
+        $index = readline();
+        
+        $name     = readline("Please enter the new account name (blank=no change): ");
+        $username = readline("Please enter the new username (blank=no change): ");
+        
+        $this->println("Please enter the new password (blank=no change): ");
+        $password = $this->getPasswordFromUserInput();
+        
+        $accounts[$index]->updateDetails($name, $username, $password);
+        
+        $this->saveAccounts($accounts);
+    }
+    
+    
+    /**
+     * Get a password from the shell without it being displayed whilst being typed. Only works on *nix 
+     * systems only and requires shell_exec and stty.
+     * @param stars - (optional) set to false to stop outputting stars as user types password. This 
+     *                prevents onlookers seeing the password length.
+     * @return string - the password that was typed in. (any text entered before hitting return/enter)
+     * NOTE: copied from
+     * http://www.dasprids.de/blog/2008/08/22/getting-a-password-hidden-from-stdin-with-php-cli
+     */
+    private function getPasswordFromUserInput($stars = true)
+    {
+        // Get current style
+        $oldStyle = shell_exec('stty -g');
+        
+        if ($stars === false) 
+        {
+            shell_exec('stty -echo');
+            $password = rtrim(fgets(STDIN), "\n");
+        } 
+        else 
+        {
+            shell_exec('stty -icanon -echo min 1 time 0');
+            $password = '';
+            
+            while (true) 
+            {
+                $char = fgetc(STDIN);
+                
+                if ($char === "\n") 
+                {
+                    break;
+                } 
+                else if (ord($char) === 127) 
+                {
+                    if (strlen($password) > 0) 
+                    {
+                        fwrite(STDOUT, "\x08 \x08");
+                        $password = substr($password, 0, -1);
+                    }
+                } 
+                else 
+                {
+                    fwrite(STDOUT, "*");
+                    $password .= $char;
+                }
+            }
+        }
+        
+        // Reset old style
+        shell_exec('stty ' . $oldStyle);
+        $this->println();
+        
+        // Return the password
+        return $password;
+    }
+    
+    
+    /**
+     * Fetches the encryption key from the user. This will detect if the user has not yet set up an
+     * encryption key and guide them through setting up if this is the case. 
+     * If a key has been set up, this will ask the user to keep entering the key until they agree the
+     * passphrase is readable, indicating that the correct key has been entered (typos)
+     * @param void
+     * @return void - m_key memeber variable is set.
+     */
+    private function getKeyFromUser()
+    {
+        print PHP_EOL . PHP_EOL;
+        
+        if (!file_exists(__DIR__ . '/data/passphrase.txt'))
+        {
+            # New user!
+            $this->println("Welcome new user!");
+            
+            $keysMatch = false;
+            
+            while (!$keysMatch)
+            {
+                $this->println("Please enter a new master key (used to encrypt all your passwords): ");
+                $masterKey1 = $this->getPasswordFromUserInput($stars=true);
+                
+                $this->println("Please enter it again to prevent mistakes: ");
+                $masterKey2 = $this->getPasswordFromUserInput($stars=true);
+                
+                if ($masterKey1 === $masterKey2)
+                {
+                    $this->m_key = $masterKey1;
+                    $keysMatch = true;
+                }
+                else
+                {
+                    $this->println("Whoops! Keys did not match. Please try again.");
+                }
+            }
+            
+            print "Please enter a phrase which will be used for key validation later." . PHP_EOL;
+            $passPhrase = readline();
+            
+            $iv = base64_encode(openssl_random_pseudo_bytes(openssl_cipher_iv_length(CIPHER)));
+            $encryptedPassPhrase = HelperLib::encrypt($passPhrase, $this->m_key, $iv);
+            
+            $fileContents = json_encode(array(
+                "encrypted_passphrase" => $encryptedPassPhrase,
+                "initialization_vector" => $iv
+            ));
+            
+            file_put_contents(__DIR__ . '/data/passphrase.txt', $fileContents);
+        }
+        else
+        {
+            $validKey = false;
+            
+            while (!$validKey)
+            {
+                $fileContents = file_get_contents(__DIR__ . '/data/passphrase.txt');
+                $fileObj = json_decode($fileContents);
+                $encryptedPassphrse = $fileObj->encrypted_passphrase;
+                $iv = $fileObj->initialization_vector;
+                $this->println("Please enter master password:");
+                $key = $this->getPasswordFromUserInput();
+                $validKey = $this->checkIfValidKey($key, $encryptedPassphrse, $iv);
+            }
+            
+            $this->m_key = $key;
+        }
+    }
+    
+    
+    /**
+     * Creates an array of PasswordPair objects from the encrypted passwords.json file
+     * @param void - information is in passwords.json which should exist on same dir level as script.
+     * @return array - $passwordsArray - list of PasswordAccount objects represented by the file.
+     */
+    private function loadAccounts()
+    {
+        $accounts = array();
+        
+        # Dont raise warnings if file doesnt exist, this will scare new users.
+        $fileData = @file_get_contents(__DIR__ . "/data/passwords.json");
+        
+        # File may not exist yet for new users
+        if ($fileData !== FALSE)
+        {
+            $jsonData = json_decode($fileData);
+            
+            if ($jsonData !== NULL)
+            {
+               foreach ($jsonData as $accountDetails)
+                {
+                    $accounts[] = new PasswordAccount(
+                        $this->m_key,
+                        $accountDetails->name, 
+                        $accountDetails->username,
+                        $accountDetails->password,
+                        $accountDetails->record_key,
+                        $accountDetails->modification_time
+                    );
+                }
+            }
+        }
+        
+        return $accounts;
+    }
+    
+    
+    /**
+     * Saves our password accounts to file so that can close program and re-load later.
+     * @param accounts - array of PasswordAccount object details to save
+     * @return void - saves data to file.
+     */
+    private function saveAccounts($accounts)
+    {
+        $jsonArray = array();
+        
+        foreach ($accounts as $account)
+        {
+            $jsonArray[] = $account->jsonSerialize();
+        }
+        
+        $jsonString = json_encode($jsonArray, JSON_PRETTY_PRINT);
+        file_put_contents(__DIR__ . "/data/passwords.json", $jsonString);
+    }
+    
+    
+    /**
+     * Writes all our password names next to numbered indexes to the terminal for the user to choose 
+     * from before reading their input. This will not just dump the password array but inject choices 
+     * such as 'search' which will need to be handled later (dont forget that choice number is a 
+     * 'shifted' relationship to password index.)
+     * @param array $passwordsArray - array of all the password accounts.
+     * @return void - outputs the password account index/names to the CLI.
+     */
+    private function outputPasswordIndexes($passwordsArray)
+    {    
+        print PHP_EOL . PHP_EOL . PHP_EOL . PHP_EOL;
+        $this->println("#------| Passwords |-----#");
+        
+        if (count($passwordsArray) > 0)
+        {
+            foreach ($passwordsArray as $index => $passwordPair)
+            {
+                print $index . " - " . $passwordPair->getName() . PHP_EOL;
+            }
+        }
+        else
+        {
+            $this->println("No results");
+        }
+        
+        $this->println("#------------------------#");
+    }
+    
+    
+    /**
+     * Add a password to our encrypted file of passwords. If a password is already set then we add that,
+     * otherwise ask the user for a password to input.
+     * @param string $password - optional paremeter, specify the password to add to system.
+     * @return void - updates our passwords file.
+     */
+    private function addPassword($password="")
+    {
+        $name     = readline("Please enter the name of the account to encrypt: ");
+        $username = readline("Please enter the username for the account: ");
+        
+        if ($password === "")
+        {
+            print "Please enter the plaintext password (not encrypted)" . PHP_EOL;
+            $password = $this->getPasswordFromUserInput();
+        }
+        
+        $accounts = $this->loadAccounts();
+        $iv = base64_encode(openssl_random_pseudo_bytes(openssl_cipher_iv_length(CIPHER)));
+        $accounts[] = new PasswordAccount($this->m_key, $name, $username, $password, $iv, time(), $encrypted=false);
+        $this->saveAccounts($accounts);
+        
+        print "Added account!" . PHP_EOL;
+    }
+    
+    
+    /**
+     * Asks the users for configuration settings before generating a random password based on those 
+     * settings and copying it to the users clipboard as well as returning it.
+     * @param void - settings are asked for in the CLI
+     * @return string $password - the generated password
+     */
+    private function generateRandomPassword() : string
+    {
+        $password = '';
+        $lowerChars = 'abcdefghijklmnopqrstuvwxyz';
+        $capitals = strtoupper($lowerChars);
+        $numbers='0123456789';
+        $special='@!%^()*+-&=#~?:;[]{}'; // only using most commonly allowed $£ causes issues
+        $possibleChars = $lowerChars;
+        
+        $numberOfChars = intval(readline("Please enter the number of characters: "));
+        $mustContainUppercase = readline("Contain uppercase letters? (y/n) ");
+        $mustContainNumber = readline("Contain numbers? (y/n) ");
+        $mustContainSpecialChars = readline("Contain symbols? (y/n) ");
+        $charOptions = array($lowerChars);
+        $counts = array(1);
+        
+        if ($mustContainUppercase == 'y')
+        {
+            $counts[] = 1;
+            $charOptions[] = $capitals;
+        }
+        
+        if ($mustContainNumber == 'y')
+        {
+            $counts[] = 1;
+            $charOptions[] = $numbers;
+        }
+        
+        if ($mustContainSpecialChars == 'y')
+        {
+            $counts[] = 1;
+            $charOptions[] = $special;
+        }
+        
+        $sum = count($counts);
+        
+        while ($sum < $numberOfChars)
+        {
+            $countIndex = rand(0, (sizeof($counts)-1));
+            $counts[$countIndex]++;
+            $sum++;
+        }
+        
+        foreach ($charOptions as $index => $charSet)
+        {
+            $possibleCharsArray = str_split($charSet);
+            
+            for ($i=0; $i < $counts[$index]; $i++)
+            {
+                $password .= $possibleCharsArray[rand(0, (sizeof($possibleCharsArray)-1))];
+            }
+        }
+        
+        $password = str_shuffle($password);
+        shell_exec('python ' . __DIR__ . '/set_clipboard.py "' . $password . '"');
+        print PHP_EOL . "The password has been copied to your clipboard." . PHP_EOL;
+        return $password;
+    }
+    
+    
+    /**
+     * Tiny function that could be inlined, just to always print an end of line character at the 
+     * end of each message. Looks neater.
+     * @param string $message - the message to ouput on the screen before the end of line.
+     * @return void - outputs to the CLI.
+     */
+    private function println($message="") { print $message . PHP_EOL; }
+    
+    
+    /**
+     * Checks if the provided key is valid by decrypting some encrypting text and asking the user if it 
+     * is readable. If we decide to change the encryption key, then the encryptedText var needs updating
+     * @param key - the key used for encrypting all the login details.
+     * @return boolean $flag - true if the key is correct, false otherwise.
+     */
+    private function checkIfValidKey($key, $passphrase, $iv)
+    {
+        $flag = false;
+        $decryptedPassphrase = HelperLib::decrypt($passphrase, $key, $iv);
+        print "Is the following text readable (y/n)?" . PHP_EOL . $decryptedPassphrase . PHP_EOL;
+        $answer = strtoupper(readline());
+        
+        switch ($answer)
+        {
+            case 'YES':
+            case 'Y':
+            {
+                $flag = true;
+            }
+            break;
+            
+            default:
+            {
+                $flag = false;
+            }
+        }
+        
+        return $flag;
+    }
+    
+    
+    /**
+     * Outputs the options for the user, allowing them to perform a variety of different tasks.
+     * This function also actus upon the choice that the user makes.
+     * @param void asks the user for input.
+     * @return void
+     */
+    private function outputOptions()
+    {
+        $this->println();
+        $this->println("#--------| Menu |--------#");
+        $this->println("What do you want to do?");
+        $this->println("0 - Search for Password");
+        $this->println("1 - List all accounts");
+        $this->println("2 - Add Password");
+        $this->println("3 - Edit Password");
+        $this->println("4 - Remove Password");
+        $this->println("5 - Generate Random Password");
+        $this->println("6 - Exit");
+        
+        $chosenOption = intval(readline(""));
+        
+        switch ($chosenOption)
+        {
+            case 0: # Search
+            {
+                $accounts = $this->loadAccounts();
+                
+                print "Please enter the search term:" . PHP_EOL;
+                $searchString = strtolower(readline());
+                $searchTokens = explode(' ', $searchString);
+                
+                $filteredResults = array();
+                
+                foreach ($accounts as $index => $passwordObject)
+                {
+                    $searchName = $passwordObject->getName();
+                    $nameTerms = explode(' ', $searchName);
+                    
+                    if 
+                    (
+                        count(array_diff($searchTokens, $nameTerms)) == 0 
+                        || stripos($searchName, $searchString) !== FALSE
+                    )
+                    {
+                        $filteredResults[$index] = $passwordObject;
+                    }
+                }
+                
+                $this->outputPasswordIndexes($filteredResults);
+                
+                if (count($filteredResults) == 1)
+                {
+                    $passwordObject = reset($filteredResults); # reset returns first element in array.
+                    /* @var $passwordObject PasswordAccount */
+                    $password = $passwordObject->getPassword();
+                    $outOfDate = false;
+                    
+                    if ((time() - $passwordObject->getModificationTime()) > (60 * 60 * 24 * 30))
+                    {
+                        $outOfDate = true;
+                    }
+                    
+                    print "setting clipboard to: $password" . PHP_EOL;
+                    shell_exec('python ' . __DIR__ . '/set_clipboard.py ' . $password);
+                    
+                    print PHP_EOL . PHP_EOL . PHP_EOL . PHP_EOL;
+                    $this->println("#------| Details |-------#");
+                    $this->println('Your username is: ' . $passwordObject->getUsername());
+                    $this->println("The password has been copied to your clipboard.");
+                    
+                    if ($outOfDate)
+                    {
+                        $this->println("");
+                        $this->println("\033[31mWARNING: THIS PASSWORD IS OVER 30 DAYS OLD! \033[0m");
+                    }
+                    
+                    $this->println("--------------------------");
+                }
+            }
+            break;
+            
+            case 1: # List
+            {
+                $accounts =$this->loadAccounts();
+                $this->outputPasswordIndexes($accounts);
+            }
+            break;
+            
+            case 2: { $this->addPassword();    } break;
+            case 3: { $this->editPassword();   } break;
+            case 4: { $this->removePassword(); } break;
+            
+            case 5: # Generate Random
+            {
+                $password = $this->generateRandomPassword();
+                
+                $this->println("Do you want to add the password to this system? (y/n)");
+                $chosenOption = readline("");
+                
+                if ($chosenOption === "y")
+                {
+                    $this->addPassword($password);
+                }
+            }
+            break;
+            
+            case 6: # exit
+            {
+                exit();
+            }
+            break;
+            
+            default:
+            {
+                $this->println("Unrecognized choice: " . $chosenOption);
+            }
+        }
+    }
+    
+    
+    /**
+     * Print the opening welcome message that appears on startup.
+     * @param void
+     * @return void - prints to terminal
+     */
+    private function printWelcome()
+    {
+        print "
+                              ______                __ _                         
+                             / __/ /___ _____ _____/ /( )___                     
+                            _\ \/ __/ // / _ `/ __/ __//(_-<                     
+                           /___/\__/\_,_/\_,_/_/  \__/ /___/                     
+       ___                                 __  __  ___                           
+      / _ \___ ____ ____    _____  _______/ / /  |/  /__ ____  ___ ____ ____ ____
+     / ___/ _ `(_-<(_-< |/|/ / _ \/ __/ _  / / /|_/ / _ `/ _ \/ _ `/ _ `/ -_) __/
+    /_/   \_,_/___/___/__,__/\___/_/  \_,_/ /_/  /_/\_,_/_//_/\_,_/\_, /\__/_/   
+                                                                  /___/          " . PHP_EOL;
+    }
+    
+    
+    /**
+     * Entry to the script. Call only once at the very start of the script
+     * @param void
+     * @return void
+     */
+    public function __construct()
+    {
+        $this->printWelcome();
+        $this->getKeyFromUser();
+        $this->loadAccounts();
+        
+        while (true)
+        {
+            $this->outputOptions();
+        }
+    }
+}
+
+
+new Main();
