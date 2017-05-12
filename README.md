@@ -1,4 +1,4 @@
-This is a CLI based password manager built and tested against Ubuntu 16.04.
+This is a CLI based password manager built and tested against Ubuntu 16.04. [Short demo youtube video](https://www.youtube.com/watch?v=x3cm7aNmgM8&feature=youtu.be).
 
 ## Requirements
 I run it on Ubuntu 16.04 desktop. The only requirement is php7.0-cli package which you can install with:
