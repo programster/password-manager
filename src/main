@@ -2,7 +2,7 @@
 
 <?php
 
-
+require_once(__DIR__ . '/vendor/autoload.php');
 require_once(__DIR__ . '/PasswordAccount.php');
 require_once(__DIR__ . '/HelperLib.php');
 
@@ -11,6 +11,26 @@ define('CIPHER', 'aes-256-cbc');
 class Main
 {
     private $m_key;
+    
+    
+    /**
+     * Entry to the script. Call only once at the very start of the script
+     * @param void
+     * @return void
+     */
+    public function __construct()
+    {
+        $this->printWelcome();
+        $this->getKeyFromUser();
+        $this->loadAccounts();
+        $mainMenu = $this->createMainMenu();
+        
+        while (true)
+        {
+            print PHP_EOL;
+            $mainMenu->run();
+        }
+    }
     
     
     /**
@@ -352,7 +372,7 @@ class Main
         }
         
         $password = str_shuffle($password);
-        shell_exec('python ' . __DIR__ . '/set_clipboard.py "' . $password . '"');
+        shell_exec('python ' . __DIR__ . '/set_clipboard.py ' . $password);
         print PHP_EOL . "The password has been copied to your clipboard." . PHP_EOL;
         return $password;
     }
@@ -399,122 +419,132 @@ class Main
     }
     
     
-    /**
-     * Outputs the options for the user, allowing them to perform a variety of different tasks.
-     * This function also actus upon the choice that the user makes.
-     * @param void asks the user for input.
-     * @return void
-     */
-    private function outputOptions()
+    private function handleListAccounts()
     {
-        $this->println();
-        $this->println("#--------| Menu |--------#");
-        $this->println("What do you want to do?");
-        $this->println("0 - Search for Password");
-        $this->println("1 - List all accounts");
-        $this->println("2 - Add Password");
-        $this->println("3 - Edit Password");
-        $this->println("4 - Remove Password");
-        $this->println("5 - Generate Random Password");
-        $this->println("6 - Exit");
+        $accounts =$this->loadAccounts();
+        $this->outputPasswordIndexes($accounts);
+    }
+    
+    
+    /**
+     * Create the main menu that the user picks options from.
+     */
+    private function createMainMenu()
+    {
+        $menu = new \Programster\CliMenu\ActionMenu(" Main Menu ");
         
-        $chosenOption = intval(readline(""));
+        $menu->addOption(new Programster\CliMenu\MenuOption(
+            "Search for password", 
+            function() { $this->handleSearch();}
+        ));
         
-        switch ($chosenOption)
+        $menu->addOption(new Programster\CliMenu\MenuOption(
+            "List Accounts", 
+            function() { $this->handleListAccounts();}
+        ));
+        
+        $menu->addOption(new Programster\CliMenu\MenuOption(
+            "Add random password", 
+            function() { $this->handleGenerateRandomPassword(); }
+        ));
+        
+        $menu->addOption(new Programster\CliMenu\MenuOption(
+            "Add custom password", 
+            function() { $this->addPassword(); }
+        ));
+        
+        $menu->addOption(new Programster\CliMenu\MenuOption(
+            "Edit password", 
+            function() { $this->editPassword(); }
+        ));
+        
+        $menu->addOption(new Programster\CliMenu\MenuOption(
+            "Delete password", 
+            function() { $this->removePassword(); }
+        ));
+        
+        $menu->addOption(new Programster\CliMenu\MenuOption(
+            "Quit", 
+            function() { exit(); }
+        ));
+        
+        return $menu;
+    }
+    
+    
+    /**
+     * Handle a users request to create a randomly generated password.
+     */
+    private function handleGenerateRandomPassword()
+    {
+        $password = $this->generateRandomPassword();
+
+        $this->println("Do you want to add the password to this system? (y/n)");
+        $chosenOption = readline("");
+
+        if ($chosenOption === "y")
         {
-            case 0: # Search
+            $this->addPassword($password);
+        }
+    }
+          
+    
+    /**
+     * Handle a users request to search for a password.
+     */
+    private function handleSearch()
+    {
+        $accounts = $this->loadAccounts();
+        
+        print "Please enter the search term:" . PHP_EOL;
+        $searchString = strtolower(readline());
+        $searchTokens = explode(' ', $searchString);
+
+        $filteredResults = array();
+
+        foreach ($accounts as $index => $passwordObject)
+        {
+            $searchName = $passwordObject->getName();
+            $nameTerms = explode(' ', $searchName);
+
+            if 
+            (
+                count(array_diff($searchTokens, $nameTerms)) == 0 
+                || stripos($searchName, $searchString) !== FALSE
+            )
             {
-                $accounts = $this->loadAccounts();
-                
-                print "Please enter the search term:" . PHP_EOL;
-                $searchString = strtolower(readline());
-                $searchTokens = explode(' ', $searchString);
-                
-                $filteredResults = array();
-                
-                foreach ($accounts as $index => $passwordObject)
-                {
-                    $searchName = $passwordObject->getName();
-                    $nameTerms = explode(' ', $searchName);
-                    
-                    if 
-                    (
-                        count(array_diff($searchTokens, $nameTerms)) == 0 
-                        || stripos($searchName, $searchString) !== FALSE
-                    )
-                    {
-                        $filteredResults[$index] = $passwordObject;
-                    }
-                }
-                
-                $this->outputPasswordIndexes($filteredResults);
-                
-                if (count($filteredResults) == 1)
-                {
-                    $passwordObject = reset($filteredResults); # reset returns first element in array.
-                    /* @var $passwordObject PasswordAccount */
-                    $password = $passwordObject->getPassword();
-                    $outOfDate = false;
-                    
-                    if ((time() - $passwordObject->getModificationTime()) > (60 * 60 * 24 * 30))
-                    {
-                        $outOfDate = true;
-                    }
-                    
-                    print "setting clipboard to: $password" . PHP_EOL;
-                    shell_exec('python ' . __DIR__ . '/set_clipboard.py ' . $password);
-                    
-                    print PHP_EOL . PHP_EOL . PHP_EOL . PHP_EOL;
-                    $this->println("#------| Details |-------#");
-                    $this->println('Your username is: ' . $passwordObject->getUsername());
-                    $this->println("The password has been copied to your clipboard.");
-                    
-                    if ($outOfDate)
-                    {
-                        $this->println("");
-                        $this->println("\033[31mWARNING: THIS PASSWORD IS OVER 30 DAYS OLD! \033[0m");
-                    }
-                    
-                    $this->println("--------------------------");
-                }
+                $filteredResults[$index] = $passwordObject;
             }
-            break;
-            
-            case 1: # List
+        }
+
+        $this->outputPasswordIndexes($filteredResults);
+
+        if (count($filteredResults) == 1)
+        {
+            $passwordObject = reset($filteredResults); # reset returns first element in array.
+            /* @var $passwordObject PasswordAccount */
+            $password = $passwordObject->getPassword();
+            $outOfDate = false;
+
+            if ((time() - $passwordObject->getModificationTime()) > (60 * 60 * 24 * 30))
             {
-                $accounts =$this->loadAccounts();
-                $this->outputPasswordIndexes($accounts);
+                $outOfDate = true;
             }
-            break;
-            
-            case 2: { $this->addPassword();    } break;
-            case 3: { $this->editPassword();   } break;
-            case 4: { $this->removePassword(); } break;
-            
-            case 5: # Generate Random
+
+            shell_exec('python ' . __DIR__ . '/set_clipboard.py "' . $password .'"');
+
+            print PHP_EOL . PHP_EOL . PHP_EOL . PHP_EOL;
+            $this->println("#------| Details |-------#");
+            $this->println('Your username is: ' . $passwordObject->getUsername());
+            $this->println("The password has been copied to your clipboard.");
+
+            if ($outOfDate)
             {
-                $password = $this->generateRandomPassword();
-                
-                $this->println("Do you want to add the password to this system? (y/n)");
-                $chosenOption = readline("");
-                
-                if ($chosenOption === "y")
-                {
-                    $this->addPassword($password);
-                }
+                $this->println("");
+                $this->println("\033[31mWARNING: THIS PASSWORD IS OVER 30 DAYS OLD! \033[0m");
             }
-            break;
-            
-            case 6: # exit
-            {
-                exit();
-            }
-            break;
-            
-            default:
-            {
-                $this->println("Unrecognized choice: " . $chosenOption);
-            }
+
+            $this->println("--------------------------");
         }
     }
     
@@ -539,22 +569,7 @@ class Main
     }
     
     
-    /**
-     * Entry to the script. Call only once at the very start of the script
-     * @param void
-     * @return void
-     */
-    public function __construct()
-    {
-        $this->printWelcome();
-        $this->getKeyFromUser();
-        $this->loadAccounts();
-        
-        while (true)
-        {
-            $this->outputOptions();
-        }
-    }
+    
 }
 
 

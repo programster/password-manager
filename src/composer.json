@@ -1,0 +1,5 @@
+{
+    "require": {
+        "programster/cli-menu": "^1.0"
+    }
+}
