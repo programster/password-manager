@@ -35,7 +35,6 @@ class PasswordAccount
         
         if ($encrypted)
         {
-            
             $this->m_password = HelperLib::decrypt($encryptedPassword, $key, $recordKey);
         }
         else
