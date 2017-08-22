@@ -50,6 +50,73 @@ class Main
     
     
     /**
+     * Handle the user requesting to import passwords with a CSV
+     * @param void
+     * @return void
+     */
+    private function importPasswords()
+    {
+        $this->println("Please specify the path to the CSV file:");
+        $path = readline();
+        
+        $csvArray = array();
+        $errors = false;
+        
+        if (file_exists($path))
+        {
+            if (($handle = fopen($path, "r")) !== FALSE) 
+            {
+                $isFirstRow = true;
+                
+                while (($row = fgetcsv($handle, 1000, ",")) !== FALSE) 
+                {
+                    if (count($row) != 3)
+                    {
+                        $errors = true;
+                        print 'Invalid CSV file. File should have 3 columns. "Account Name", "User name", "plaintext password".';
+                        break;
+                    }
+                    
+                    if ($isFirstRow)
+                    {
+                        $isFirstRow = false;
+                    }
+                    else
+                    {
+                        $csvArray[] = array(
+                            'account'  => $row[0],
+                            'username' => $row[1],
+                            'password' => $row[2],
+                        );
+                    }
+                }
+                
+                fclose($handle);
+                
+                // If we successfully imported all the file into memory....
+                if (!$errors)
+                {
+                    foreach ($csvArray as $row)
+                    {
+                        $this->importPassword($row['account'], $row['username'], $row['password']);
+                    }
+                }
+                
+                print "Passwords imported." . PHP_EOL;
+            }
+            else
+            {
+                print "Error: couldn't open the file for reading." . PHP_EOL;
+            }
+        }
+        else
+        {
+            print "Error: file does not exist." . PHP_EOL;
+        }
+    }
+    
+    
+    /**
      * Handle the user specifying that they want to edit a password from the options menu.
      * Steps the user through changing the deetails before saving the passwords to the file.
      * @param void
@@ -243,13 +310,15 @@ class Main
      * @param accounts - array of PasswordAccount object details to save
      * @return void - saves data to file.
      */
-    private function saveAccounts($accounts)
+    private function saveAccounts(array $accounts)
     {
         $jsonArray = array();
         
         foreach ($accounts as $account)
         {
-            $jsonArray[] = $account->jsonSerialize();
+            /* @var $account PasswordAccount */
+            $serializedAccount = $account->jsonSerialize();
+            $jsonArray[] = $serializedAccount;
         }
         
         $jsonString = json_encode($jsonArray, JSON_PRETTY_PRINT);
@@ -303,12 +372,32 @@ class Main
             $password = $this->getPasswordFromUserInput();
         }
         
+        $this->importPassword($name, $username, $password);
+    }
+    
+    
+    /**
+     * Helper function that will add the account with the provided details
+     * @param string $account - name for the account e.g. "facebook"
+     * @param string $username - the name to log in with e.g. your email address
+     * @param string $password - plaintext version of the password.
+     */
+    private function importPassword(string $account, string $username, string $password)
+    {
         $accounts = $this->loadAccounts();
         $iv = base64_encode(openssl_random_pseudo_bytes(openssl_cipher_iv_length(CIPHER)));
-        $accounts[] = new PasswordAccount($this->m_key, $name, $username, $password, $iv, time(), $encrypted=false);
-        $this->saveAccounts($accounts);
         
-        print "Added account!" . PHP_EOL;
+        $accounts[] = new PasswordAccount(
+            $this->m_key, 
+            $account, 
+            $username, 
+            $password, 
+            $iv, 
+            time(), 
+            $encrypted=false
+        );
+        
+        $this->saveAccounts($accounts);
     }
     
     
@@ -461,6 +550,11 @@ class Main
         $menu->addOption(new Programster\CliMenu\MenuOption(
             "Delete password", 
             function() { $this->removePassword(); }
+        ));
+        
+        $menu->addOption(new Programster\CliMenu\MenuOption(
+            "Import passwords (CSV)", 
+            function() { $this->importPasswords(); }
         ));
         
         $menu->addOption(new Programster\CliMenu\MenuOption(
