@@ -22,5 +22,13 @@ I hope this tool might prove useful to others, and perhaps by open sourcing it, 
 ## Docker
 I would love to get this tool to work in docker so that other distros and Mac users could run it. It works well with the Dockerfile I added, but I don't know how to get the clipboard functionality to work. Please submit a pull request if you can fix this!
 
+## Importing Passwords
+Since 1.2, this tool has supported importing passwords from a CSV. To do this you need to create a CSV file, of which, the first row is ignored and considered headings. Copy and paste the following into a text file and save it with the `.csv` extension and fill in your passwords. Once the file is saved as .csv, you may find it easier to fill in the file using Excel or [LibreCalc](https://www.libreoffice.org/download/download/) which is **free!**.
+
+```
+"account name", "username", "plaintext password"
+"facebook", "my.email@gmail.com", "thisismypassword"
+```
+Make a mental note of where you saved the file, then use the appropriate menu option for importing passwords before typing in the path to that file.
 
 Enjoy!
